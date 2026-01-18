@@ -1,3 +1,7 @@
+# ngs360-omics-run-event-processor
+AWSTemplateFormatVersion: '2010-09-09'
+Description: NGS360 Omics Run Event Processor CloudFormation Template
+
 Parameters:
   DeadLetterEmail:
     Type: String
