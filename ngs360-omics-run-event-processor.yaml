@@ -113,6 +113,28 @@ Resources:
         SubnetIds: 
           - !Ref SubnetId
 
+  OmicsRunEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: EventBridge Rule to trigger Omics Run Event Processor Lambda Function
+      EventPattern:
+        source:
+          - omics.run
+        detail-type:
+          - Omics Run State Change
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt OmicsRunEventProcessorFunction.Arn
+          Id: "OmicsRunEventProcessorFunctionTarget"
+
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref OmicsRunEventProcessorFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt OmicsRunEventRule.Arn
+
 Outputs:
   LambdaFunctionName:
     Description: Name of the Omics Run Event Processor Lambda Function
