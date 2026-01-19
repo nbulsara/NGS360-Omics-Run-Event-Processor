@@ -1,4 +1,5 @@
 # ngs360-omics-run-event-processor
+
 AWSTemplateFormatVersion: '2010-09-09'
 Description: NGS360 Omics Run Event Processor CloudFormation Template
 
@@ -34,8 +35,7 @@ Resources:
   DeadLetterQueue:
     Type: AWS::SNS::Topic
     Properties:
-      DisplayName: NGS360 Omics Run Event Processor Dead Letter Queue
-      TopicName: ngs360-omics-run-event-processor-dead-letter-queue
+      DisplayName: ngs360-omics-run-event-processor-dead-letter-queue
       Subscription:
         - Endpoint: !Ref DeadLetterEmail
           Protocol: email
@@ -52,6 +52,18 @@ Resources:
                 - lambda.amazonaws.com
             Action:
               - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: SNSPublishPolicy  
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource:
+                  - !Ref DeadLetterQueue
 
   OmicsRunEventProcessorFunction:
     Type: AWS::Lambda::Function
@@ -175,14 +187,12 @@ Resources:
   
       Handler: lambda_handler
       LoggingConfig: 
-        ApplicationLogLevel: INFO
         LogFormat: Text
         LogGroup: /aws/lambda/ngs360/omics-run-event-processor
-        SystemLogLevel: INFO
 
       PackageType: Zip
 
-      Role: !Ref LambdaExecutionRole
+      Role: !GetAtt LambdaExecutionRole.Arn
       Runtime: python3.12
   
       Tags: 
