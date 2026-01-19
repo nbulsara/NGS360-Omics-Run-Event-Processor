@@ -85,8 +85,8 @@ def lambda_handler(event, context):
         ServerSideEncryption='AES256'
     )
 
-    # Call NGS360 API
-    api_url = f'{API_SERVER}/api/v1/omics/run-event'
+    # Call GA4GH WES API Server
+    api_url = f'{API_SERVER}/internal/callbacks/omics-state-change'
     headers = {'Content-Type': 'application/json'}
     requests.post(api_url, headers=headers, data=json_data, timeout=10)
 
