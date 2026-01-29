@@ -40,8 +40,8 @@ sample_output_mapping = {
 # Sample log URLs for completed/failed/cancelled events
 sample_log_urls = {
     'run_log': 'https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:log-groups/log-group/aws%2Fomics%2FWorkflowLog/log-events/run%2F8567247',
-    'task_logs': {'main': 'https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:log-groups/log-group/aws%2Fomics%2FWorkflowLog/log-events/task%2F8567247%2Fmain'},
-    'manifest_log': 'https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:log-groups/log-group/aws%2Fomics%2FWorkflowLog/log-events/manifest%2Frun%2F8567247'
+    'task_logs_base_url': 'https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:log-groups/log-group/aws%2Fomics%2FWorkflowLog',
+    'manifest_log_base_url': 'https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:log-groups/log-group/aws%2Fomics%2FWorkflowLog/log-events/manifest$252Frun$252F8567247'
 }
 
 # Configure mock responses
@@ -65,6 +65,17 @@ def setup_mocks():
             'Project': 'TestProject',
             'Owner': 'TestUser'
         }
+    }
+    
+    # Mock Omics list_run_tasks
+    mock_omics.list_run_tasks.return_value = {
+        'items': [
+            {
+                'id': '3974135',
+                'name': 'main',
+                'status': 'COMPLETED'
+            }
+        ]
     }
     
     # Replace the boto3 clients with our mocks

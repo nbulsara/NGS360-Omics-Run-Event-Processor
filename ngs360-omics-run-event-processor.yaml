@@ -105,6 +105,7 @@ Resources:
                 Action:
                   - omics:GetRun
                   - omics:ListRuns
+                  - omics:ListRunTasks
                 Resource: "*"
 
   OmicsRunEventProcessorFunction:

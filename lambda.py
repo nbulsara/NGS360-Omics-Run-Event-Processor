@@ -142,22 +142,58 @@ def get_log_urls(run_id, region, logger):
         # Initialize result with run log URL
         result = {'run_log': run_log_url}
 
-        # Get additional run details to find task IDs
+        # Try to get task IDs for this run
         try:
-            # For task logs, we need to get the task ID from the run details
-            # The path is different: run/{run_id}/task/{task_id}
-            # For now, we'll use a placeholder that links to the run log group
-            # where users can navigate to the specific task logs
+            # List tasks for this run
+            tasks_response = omics_client.list_run_tasks(
+                id=run_id,
+                maxResults=10  # Adjust as needed
+            )
+            
+            # Process task information
+            if 'items' in tasks_response and tasks_response['items']:
+                task_logs = {}
+                for task in tasks_response['items']:
+                    task_id = task.get('id')
+                    task_name = task.get('name', 'unnamed')
+                    if task_id:
+                        # Create direct link to task log
+                        task_log_stream = f"run/{actual_run_id}/task/{task_id}"
+                        task_log_url = (
+                            f"https://{region}.console.aws.amazon.com/cloudwatch/home"
+                            f"?region={region}#logsV2:log-groups/log-group/"
+                            f"{log_group.replace('/', '%2F')}"
+                            f"/log-events/{task_log_stream.replace('/', '%2F')}"
+                        )
+                        task_logs[task_name] = task_log_url
+                
+                if task_logs:
+                    result['task_logs'] = task_logs
+                    logger.info(f"Added {len(task_logs)} task log URLs for run {run_id}")
+            else:
+                # Fallback to base URL if no tasks found
+                task_logs_base_url = (
+                    f"https://{region}.console.aws.amazon.com/cloudwatch/home"
+                    f"?region={region}#logsV2:log-groups/log-group/"
+                    f"{log_group.replace('/', '%2F')}"
+                )
+                result['task_logs_base_url'] = task_logs_base_url
+                logger.info(f"No tasks found, added task logs base URL for run {run_id}")
+        except Exception as e:
+            logger.warning(f"Error retrieving task logs for run {run_id}: {str(e)}")
+            # Fallback to base URL
             task_logs_base_url = (
                 f"https://{region}.console.aws.amazon.com/cloudwatch/home"
                 f"?region={region}#logsV2:log-groups/log-group/"
                 f"{log_group.replace('/', '%2F')}"
             )
             result['task_logs_base_url'] = task_logs_base_url
-            logger.info(f"Added task logs base URL for run {run_id}")
             
+        # Try to find manifest log
+        try:
             # For manifest log, the format is manifest/run/{run_id}/{uuid}
-            # We'll include a base URL that users can navigate from
+            # We need to list log streams to find the exact UUID
+            # For now, we'll include a base URL that users can navigate from
             manifest_log_base_url = (
                 f"https://{region}.console.aws.amazon.com/cloudwatch/home"
                 f"?region={region}#logsV2:log-groups/log-group/"
@@ -166,7 +202,7 @@ def get_log_urls(run_id, region, logger):
             result['manifest_log_base_url'] = manifest_log_base_url
             logger.info(f"Added manifest log base URL for run {run_id}")
         except Exception as e:
-            logger.warning(f"Error creating additional log URLs for run {run_id}: {str(e)}")
+            logger.warning(f"Error creating manifest log URL for run {run_id}: {str(e)}")
 
         # Return all log URLs
         return result
