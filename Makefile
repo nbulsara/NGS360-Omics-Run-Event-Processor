@@ -1,20 +1,27 @@
 NAME=ngs360-omics-run-event-processor
+STACK_NAME=ngs360-omics-run-event-pr-OmicsRunEventProcessorFu-BQJMqXfWNdMS
+BUCKET=bmsrd-ngs-omics
+BUCKET_PREFIX=omics-run-events
 
 create-lambda-package:
-	rm -rf lambda-package
-	mkdir lambda-package && \
+	# Get git short hash for versioning
+	$(eval VER := $(shell git log -1 --pretty=format:"%h"))
+	# Remove zip file if it exists
+	$(eval zipfile := $(NAME)-$(VER).zip)
+	@if [ -f $(zipfile) ]; then rm $(zipfile); fi
+
+	mkdir -p lambda-package && \
 	cd lambda-package && \
 	cp ../lambda.py . && \
 	pip3 install -r ../requirements.txt -t . && \
-	zip -r ../lambda-package.zip .
-	aws s3 cp lambda-package.zip s3://${DATA_LAKE_BUCKET}/${BUCKET_PREFIX}/lambda-package.zip --sse
+	zip -r ../$(zipfile) .
+	aws s3 cp $(zipfile) s3://${BUCKET}/${BUCKET_PREFIX}/$(zipfile) --sse
 
 cf-create: create-lambda-package
-	
 	aws cloudformation create-stack --stack-name $(NAME) --template-body file://$(NAME).yaml --capabilities CAPABILITY_IAM --parameters file://parameters.json
 
 cf-update:
 	aws cloudformation update-stack --stack-name $(NAME) --template-body file://$(NAME).yaml --capabilities CAPABILITY_IAM --parameters file://parameters.json
 
 lambda-update: create-lambda-package
-	aws lambda update-function-code --function-name $(NAME)-OmicsRunEventProcessorFunction --s3-bucket ${DATA_LAKE_BUCKET} --s3-key ${BUCKET_PREFIX}/lambda-package.zip --publish
+	aws lambda update-function-code --function-name $(STACK_NAME) --s3-bucket ${BUCKET} --s3-key ${BUCKET_PREFIX}/$(zipfile) --publish
