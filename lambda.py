@@ -437,10 +437,9 @@ def lambda_handler(event, context):
     # Call GA4GH WES API Server
     api_url = f'{API_SERVER}/internal/callbacks/omics-state-change'
     headers = {'Content-Type': 'application/json'}
-    if AUTH_TOKEN:
-        headers['Authorization'] = f'Bearer {AUTH_TOKEN}'
-    #else: # TODO: Remove this line - testing purpose
-    #    headers['X-Internal-API-Key'] = 'testapikey' # TODO: Remove this line - testing purpose
+    # if AUTH_TOKEN:
+    #    headers['Authorization'] = f'Bearer {AUTH_TOKEN}'
+    headers['X-Internal-API-Key'] = AUTH_TOKEN
     logging.info(headers)
 
     try:
