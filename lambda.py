@@ -342,12 +342,262 @@ def ensure_json_serializable(obj):
         return str(obj)
 
 
-def lambda_handler(event, context):
-    '''
-    Main Entry Point for Lambda function
+def convert_file_path_to_s3(file_path):
+    """
+    Convert file path to S3 URI if needed.
 
-    Calls NGS360 API Service with run event information
-    '''
+    Args:
+        file_path: File path (can be file://, s3://, or NGS360: format)
+
+    Returns:
+        S3 URI
+    """
+    if file_path.startswith('s3://'):
+        return file_path
+    elif file_path.startswith('file://'):
+        # Remove file:// prefix and convert to S3 path
+        # This is a simplified conversion - in production you'd need proper path mapping
+        local_path = file_path[7:]  # Remove 'file://'
+        # For now, assume it's already in the right bucket structure
+        return f"s3://bucket-name{local_path}"
+    elif file_path.startswith('NGS360:'):
+        # Handle NGS360 file IDs - convert to actual S3 paths
+        # This would need integration with NGS360 file service
+        file_id = file_path[7:]  # Remove 'NGS360:'
+        return f"s3://ngs360-files/{file_id}"
+    else:
+        # Assume it's already a valid S3 URI or local path
+        return file_path
+
+
+def convert_wes_params_to_omics(wes_params, workflow_type):
+    """
+    Convert WES workflow parameters to Omics format.
+
+    Args:
+        wes_params: Dictionary of WES workflow parameters
+        workflow_type: Workflow type (e.g., 'CWL', 'WDL')
+
+    Returns:
+        Dictionary of Omics-formatted parameters
+    """
+    omics_params = {}
+
+    for key, value in wes_params.items():
+        if key == 'workflow_id':
+            continue  # Exclude workflow_id from parameters
+
+        if isinstance(value, dict) and 'class' in value:
+            # CWL File/Directory object
+            converted_value = value.copy()
+            if 'path' in converted_value:
+                converted_value['path'] = convert_file_path_to_s3(converted_value['path'])
+            omics_params[key] = converted_value
+
+        elif isinstance(value, list):
+            # Array of files/values
+            processed_list = []
+            for item in value:
+                if isinstance(item, dict) and 'path' in item:
+                    converted_item = item.copy()
+                    converted_item['path'] = convert_file_path_to_s3(converted_item['path'])
+                    processed_list.append(converted_item)
+                elif isinstance(item, str) and (item.startswith('file://') or
+                                                item.startswith('NGS360:') or
+                                                item.startswith('s3://')):
+                    processed_list.append(convert_file_path_to_s3(item))
+                else:
+                    processed_list.append(item)
+            omics_params[key] = processed_list
+
+        elif isinstance(value, str) and (value.startswith('file://') or
+                                         value.startswith('NGS360:') or
+                                         value.startswith('s3://')):
+            # Simple file path
+            omics_params[key] = convert_file_path_to_s3(value)
+
+        else:
+            # Other parameters (strings, numbers, booleans)
+            omics_params[key] = value
+
+    return omics_params
+
+
+def validate_submission_request(event):
+    """
+    Validate workflow submission request.
+
+    Args:
+        event: Lambda event containing submission request
+
+    Returns:
+        tuple: (is_valid, error_message)
+    """
+    required_fields = ['action', 'wes_run_id', 'workflow_id']
+
+    for field in required_fields:
+        if field not in event:
+            return False, f"Missing required field: {field}"
+
+    if event['action'] != 'submit_workflow':
+        return False, f"Invalid action: {event['action']}"
+
+    workflow_id = event.get('workflow_id', '')
+    if not workflow_id or len(workflow_id) < 1:
+        return False, f"Invalid workflow_id: {workflow_id}. Workflow ID is required"
+
+    wes_run_id = event.get('wes_run_id', '')
+    if len(wes_run_id) != 36:
+        return False, f"Invalid wes_run_id format: {wes_run_id}. Must be 36 characters"
+
+    return True, None
+
+
+def submit_omics_run(event, context):
+    """
+    Handle workflow submission requests from GA4GH WES API.
+    Submits new workflows to AWS Omics using the same logic as the working omics.py.
+    """
+    logger = setup_logging(event)
+
+    try:
+        # Validate input parameters
+        is_valid, error_msg = validate_submission_request(event)
+        if not is_valid:
+            logger.error(f"Validation error: {error_msg}")
+            return {
+                'statusCode': 400,
+                'error': 'ValidationError',
+                'message': error_msg
+            }
+
+        # Extract parameters
+        wes_run_id = event['wes_run_id']
+        workflow_id = event['workflow_id']
+        workflow_version = event.get('workflow_version')  # Optional workflow version
+        workflow_type = event.get('workflow_type', 'CWL')
+        wes_params = event.get('parameters', {})
+        workflow_engine_params = event.get('workflow_engine_parameters', {})
+        tags = event.get('tags', {})
+
+        logger.info(f"Processing workflow submission: wes_run_id={wes_run_id}, workflow_id={workflow_id}, workflow_version={workflow_version}")
+
+        # Convert WES parameters to Omics format using the same logic as omics.py
+        omics_params = convert_wes_params_to_omics(wes_params, workflow_type)
+        logger.info(f"Converted parameters for Omics: {json.dumps(omics_params, default=str)}")
+
+        # Set default output URI if not provided in workflow_engine_parameters
+        # Following the same logic as omics.py execute method
+        output_uri = None
+        output_bucket = os.environ.get('DATA_LAKE_BUCKET', 's3://ngs360-omics-data-lake')
+
+        if workflow_engine_params and 'outputUri' in workflow_engine_params:
+            output_uri = workflow_engine_params['outputUri']
+            logger.info(f"Using output URI from workflow_engine_parameters: {output_uri}")
+        else:
+            output_uri = f"{output_bucket}/runs/{wes_run_id}/output/"
+            logger.info(f"Using default output URI: {output_uri}")
+
+        # Prepare Omics start_run parameters following omics.py format
+        kwargs = {
+            'workflowId': workflow_id,
+            'roleArn': os.environ.get('OMICS_ROLE_ARN'),
+            'parameters': omics_params,
+            'outputUri': output_uri,
+            'name': f"wes-run-{wes_run_id}",
+            'retentionMode': 'REMOVE',
+            'storageType': 'DYNAMIC'
+        }
+
+        # Add workflow version if specified
+        if workflow_version:
+            kwargs['workflowVersionName'] = workflow_version
+            logger.info(f"Using workflow version: {workflow_version}")
+
+        # Add tags from the event, ensuring WESRunId is included
+        if tags and len(tags) > 0:
+            # Ensure WESRunId is in tags
+            if 'WESRunId' not in tags:
+                tags['WESRunId'] = wes_run_id
+            kwargs['tags'] = tags
+            logger.info(f"Adding tags to Omics run: {tags}")
+
+            # Override name if provided in tags
+            if "Name" in tags:
+                kwargs['name'] = tags.get("Name")
+        else:
+            # Ensure WESRunId tag is always present
+            kwargs['tags'] = {'WESRunId': wes_run_id}
+
+        # Extract and add Omics-specific parameters from workflow_engine_parameters
+        # Following the same logic as omics.py execute method
+        if workflow_engine_params:
+            engine_params = workflow_engine_params
+
+            # Override name if provided
+            if 'name' in engine_params:
+                kwargs['name'] = engine_params['name']
+
+            # Add run group ID if specified
+            if 'runGroupId' in engine_params:
+                kwargs['runGroupId'] = engine_params['runGroupId']
+                logger.info(f"Using run group ID: {engine_params['runGroupId']}")
+
+            # Add cache ID for reusing previous runs
+            if 'cacheId' in engine_params:
+                kwargs['cacheId'] = engine_params['cacheId']
+                logger.info(f"Using cached run ID: {engine_params['cacheId']}")
+
+            # Add tags if provided (merge with existing tags)
+            if 'tags' in engine_params:
+                kwargs['tags'].update(engine_params['tags'])
+
+            # Add other supported parameters from omics.py
+            omics_engine_params = [
+                'priority', 'storageCapacity', 'accelerators', 'logLevel', 'storageType'
+            ]
+            for param in omics_engine_params:
+                if param in engine_params:
+                    kwargs[param] = engine_params[param]
+
+        # Validate that we have required parameters
+        if not kwargs['roleArn']:
+            raise ValueError("OMICS_ROLE_ARN environment variable is required")
+
+        # Log the API call parameters (same as omics.py)
+        logger.info(f"Starting Omics run with parameters: {kwargs}")
+
+        # Make the API call to start the run (same as omics.py)
+        logging.info(kwargs)
+        response = omics_client.start_run(**kwargs)
+
+        # Store the Omics run ID
+        omics_run_id = response['id']
+        log_msg = f"Started AWS Omics run: {omics_run_id}, output will be in: {output_uri}"
+        logger.info(f"WES run {wes_run_id}: {log_msg}")
+
+        return {
+            'statusCode': 200,
+            'omics_run_id': omics_run_id,
+            'output_uri': output_uri,
+            'message': 'Workflow submitted successfully',
+            'wes_run_id': wes_run_id
+        }
+
+    except Exception as e:
+        logger.error(f"Error in workflow submission: {str(e)}")
+        return {
+            'statusCode': 500,
+            'error': 'OmicsSubmissionError',
+            'message': f'Failed to submit workflow to Omics: {str(e)}'
+        }
+
+
+def update_status(event, context):
+    """
+    Handle EventBridge state change events (existing functionality).
+    This contains all the original lambda_handler logic.
+    """
     data = {}
     logger = setup_logging(event)
 
@@ -437,8 +687,6 @@ def lambda_handler(event, context):
     # Call GA4GH WES API Server
     api_url = f'{API_SERVER}/internal/callbacks/omics-state-change'
     headers = {'Content-Type': 'application/json'}
-    # if AUTH_TOKEN:
-    #    headers['Authorization'] = f'Bearer {AUTH_TOKEN}'
     headers['X-Internal-API-Key'] = AUTH_TOKEN
     logging.info(headers)
 
@@ -457,3 +705,53 @@ def lambda_handler(event, context):
         'statusCode': 200,
         'body': msg
     }
+
+
+def lambda_handler(event, context):
+    """
+    Main entry point for Lambda function.
+    Routes requests to appropriate handler based on event type.
+    """
+    logger = setup_logging(event)
+
+    try:
+        # Method 1: Check for explicit workflow submission action
+        if event.get('action') == 'submit_workflow':
+            logger.info("Routing to workflow submission handler")
+            return submit_omics_run(event, context)
+
+        # Method 2: Check for EventBridge characteristics
+        elif (event.get('source') == 'aws.omics' and
+              event.get('detail-type') == 'Run Status Change'):
+            logger.info("Routing to status update handler")
+            return update_status(event, context)
+
+        # Method 3: Fallback for existing EventBridge events (backward compatibility)
+        elif 'detail' in event and 'runId' in event.get('detail', {}):
+            logger.info("Routing to status update handler (legacy format)")
+            return update_status(event, context)
+
+        # Method 4: Direct fields check (fallback for submission)
+        elif 'wes_run_id' in event and 'workflow_id' in event:
+            logger.info("Routing to workflow submission handler (legacy format)")
+            if 'action' not in event:
+                event['action'] = 'submit_workflow'  # Add action for consistency
+            return submit_omics_run(event, context)
+
+        # Unknown event type
+        else:
+            error_msg = f"Unknown event type. Event structure: {json.dumps(event, default=str)[:500]}..."
+            logger.error(error_msg)
+            return {
+                'statusCode': 400,
+                'error': 'UnknownEventType',
+                'message': 'Unable to determine event type - neither EventBridge nor workflow submission'
+            }
+
+    except Exception as e:
+        logger.error(f"Error in main handler: {str(e)}")
+        return {
+            'statusCode': 500,
+            'error': 'InternalError',
+            'message': f'Lambda handler error: {str(e)}'
+        }

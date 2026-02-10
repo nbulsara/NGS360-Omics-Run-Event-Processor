@@ -34,6 +34,9 @@ Parameters:
   SubnetId:
       Type: String
       Description: Subnet ID for the Lambda function
+  OmicsRoleArn:
+      Type: String
+      Description: ARN of the IAM role for AWS Omics workflow execution
 
 Resources:
   ApiServerAuthTokenSecret:
@@ -106,6 +109,8 @@ Resources:
                   - omics:GetRun
                   - omics:ListRuns
                   - omics:ListRunTasks
+                  - omics:StartRun
+                  - omics:TagResource
                 Resource: "*"
 
   OmicsRunEventProcessorFunction:
@@ -125,6 +130,7 @@ Resources:
           S3_PREFIX: !Ref BucketPrefix
           VERBOSE_LOGGING: !Ref VerboseLogging
           ENV_SECRETS: !Ref ApiServerAuthTokenSecret
+          OMICS_ROLE_ARN: !Ref OmicsRoleArn
 
       Handler: lambda.lambda_handler
       LoggingConfig: 
