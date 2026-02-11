@@ -568,7 +568,6 @@ def submit_omics_run(event, context):
         logger.info(f"Starting Omics run with parameters: {kwargs}")
 
         # Make the API call to start the run (same as omics.py)
-        logging.info(kwargs)
         response = omics_client.start_run(**kwargs)
 
         # Store the Omics run ID
@@ -730,13 +729,6 @@ def lambda_handler(event, context):
         elif 'detail' in event and 'runId' in event.get('detail', {}):
             logger.info("Routing to status update handler (legacy format)")
             return update_status(event, context)
-
-        # Method 4: Direct fields check (fallback for submission)
-        elif 'wes_run_id' in event and 'workflow_id' in event:
-            logger.info("Routing to workflow submission handler (legacy format)")
-            if 'action' not in event:
-                event['action'] = 'submit_workflow'  # Add action for consistency
-            return submit_omics_run(event, context)
 
         # Unknown event type
         else:

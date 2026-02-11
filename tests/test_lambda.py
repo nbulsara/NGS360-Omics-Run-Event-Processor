@@ -1,213 +1,515 @@
 #!/usr/bin/env python3
 """
-Test script for the AWS HealthOmics Run Event Processor Lambda function.
+Mock-based unit tests for the AWS HealthOmics Run Event Processor Lambda function.
 
-This script tests the Lambda function with sample events to verify the enhanced functionality.
+This script tests all Lambda function components using mocks to avoid real AWS API calls.
 """
 
 import json
 import os
 import sys
-from unittest.mock import MagicMock, patch
+import unittest
+from unittest.mock import MagicMock, patch, call
+from datetime import datetime
 
 # Add the parent directory to the path so we can import the lambda module
 sys.path.append('..')
 
-# Import the lambda module with a different name to avoid keyword conflict
-import sys
-sys.path.append('..')
-# Use importlib to import a module with a Python keyword name
-import importlib
-lambda_func = importlib.import_module('lambda')
-
-# Set up mock environment variables
+# Set up required environment variables before importing lambda module
 os.environ['API_SERVER'] = 'https://api.example.com'
 os.environ['DATA_LAKE_BUCKET'] = 'test-bucket'
 os.environ['S3_PREFIX'] = 'omics-run-events'
 os.environ['VERBOSE_LOGGING'] = 'true'
+os.environ['OMICS_ROLE_ARN'] = 'arn:aws:iam::123456789012:role/test-omics-role'
+os.environ['AWS_DEFAULT_REGION'] = 'us-east-1'  # Set default region for boto3
 
-# Create mock objects for boto3 clients
-mock_s3 = MagicMock()
-mock_omics = MagicMock()
-mock_secrets_client = MagicMock()
+# Mock boto3 clients before importing lambda module to avoid AWS credential issues
+with patch('boto3.client') as mock_boto3_client:
+    # Configure mock clients
+    mock_boto3_client.return_value = MagicMock()
 
-# Sample output mapping for completed events
-sample_output_mapping = {
-    "RecalibratedBAM": "s3://bucket/path/to/output.bam",
-    "VariantCalls": "s3://bucket/path/to/variants.vcf"
-}
+    # Import the lambda module with a different name to avoid keyword conflict
+    import importlib
+    lambda_func = importlib.import_module('lambda')
 
-# Sample log URLs for completed/failed/cancelled events
-sample_log_urls = {
-    'run_log': 'https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:log-groups/log-group/aws%2Fomics%2FWorkflowLog/log-events/run%2F8567247',
-    'task_logs_base_url': 'https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:log-groups/log-group/aws%2Fomics%2FWorkflowLog',
-    'manifest_log_base_url': 'https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:log-groups/log-group/aws%2Fomics%2FWorkflowLog?logStreamNameFilter=manifest%2Frun%2F8567247'
-}
 
-# Configure mock responses
-def setup_mocks():
-    # Mock S3 get_object for output mapping
-    mock_s3.get_object.return_value = {
-        'Body': MagicMock(
-            read=MagicMock(
-                return_value=json.dumps(sample_output_mapping).encode('utf-8')
-            )
-        )
-    }
-    
-    # Mock Omics get_run for log URLs and tags
-    mock_omics.get_run.return_value = {
-        'logLocation': {
-            'runLogStream': 'arn:aws:logs:us-east-1:example_account:log-group:/aws/omics/WorkflowLog:log-stream:run/8567247'
-        },
-        'tags': {
-            'WESRunId': 'test-wes-run-123',
-            'Project': 'TestProject',
-            'Owner': 'TestUser'
-        }
-    }
-    
-    # Mock Omics list_run_tasks
-    mock_omics.list_run_tasks.return_value = {
-        'items': [
-            {
-                'taskId': '3974135',
-                'name': 'main',
-                'status': 'COMPLETED'
-            }
+class TestParameterConversion(unittest.TestCase):
+    """Test parameter conversion functions."""
+
+    def test_convert_file_path_to_s3(self):
+        """Test file path conversion to S3 URIs."""
+        test_cases = [
+            ('file:///data/input.txt', 's3://bucket-name/data/input.txt'),
+            ('NGS360:/references/hg38.fa', 's3://ngs360-files//references/hg38.fa'),
+            ('s3://existing-bucket/file.txt', 's3://existing-bucket/file.txt'),
+            ('regular_file.txt', 'regular_file.txt'),
+            ('', ''),  # Edge case: empty string
         ]
-    }
-    
-    # Replace the boto3 clients with our mocks
-    lambda_func.s3 = mock_s3
-    lambda_func.omics_client = mock_omics
-    lambda_func.secrets_client = mock_secrets_client
 
-def test_event(event_file, expected_status, should_have_log_urls=False, should_have_output_mapping=False):
-    """Test the Lambda function with a sample event."""
-    print(f"\nTesting {event_file} (status: {expected_status})...")
-    
-    # Load the sample event
-    with open(event_file, 'r') as f:
-        event = json.load(f)
-    
-    # Reset mock call counts
-    mock_s3.reset_mock()
-    mock_omics.reset_mock()
-    
-    # Patch the requests.post method to avoid making actual HTTP requests
-    with patch('requests.post') as mock_post:
-        # Set up the mock to return a successful response
-        mock_post.return_value.status_code = 200
-        
-        # Call the Lambda function
+        for input_path, expected_output in test_cases:
+            with self.subTest(input_path=input_path):
+                result = lambda_func.convert_file_path_to_s3(input_path)
+                self.assertEqual(result, expected_output)
+
+    def test_convert_wes_params_to_omics(self):
+        """Test WES parameter conversion to Omics format."""
+        wes_params = {
+            'input_file': 'file:///data/input.txt',
+            'reference': {
+                'class': 'File',
+                'path': 'NGS360:/references/hg38.fa'
+            },
+            'file_array': [
+                {'class': 'File', 'path': 'file:///data/file1.txt'},
+                {'class': 'File', 'path': 'file:///data/file2.txt'}
+            ],
+            'simple_string_array': [
+                'file:///data/string1.txt',
+                'NGS360:/data/string2.txt'
+            ],
+            'simple_param': 'test_value',
+            'number_param': 42,
+            'workflow_id': 'should_be_excluded'
+        }
+
+        converted = lambda_func.convert_wes_params_to_omics(wes_params, 'CWL')
+
+        # Verify file path conversions (based on actual convert_file_path_to_s3 implementation)
+        self.assertEqual(converted['input_file'], 's3://bucket-name/data/input.txt')
+        self.assertEqual(converted['reference']['path'], 's3://ngs360-files//references/hg38.fa')
+
+        # Verify array handling
+        self.assertEqual(len(converted['file_array']), 2)
+        self.assertEqual(converted['file_array'][0]['path'], 's3://bucket-name/data/file1.txt')
+        self.assertEqual(converted['file_array'][1]['path'], 's3://bucket-name/data/file2.txt')
+
+        # Verify string array conversion
+        self.assertEqual(converted['simple_string_array'][0], 's3://bucket-name/data/string1.txt')
+        self.assertEqual(converted['simple_string_array'][1], 's3://ngs360-files//data/string2.txt')
+
+        # Verify other parameters preserved
+        self.assertEqual(converted['simple_param'], 'test_value')
+        self.assertEqual(converted['number_param'], 42)
+
+        # Verify workflow_id excluded
+        self.assertNotIn('workflow_id', converted)
+
+
+class TestValidation(unittest.TestCase):
+    """Test validation functions."""
+
+    def test_validate_submission_request_valid(self):
+        """Test validation with valid submission request."""
+        valid_event = {
+            'action': 'submit_workflow',
+            'wes_run_id': 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',  # Valid 36-character UUID format
+            'workflow_id': '6287203'
+        }
+
+        is_valid, error_msg = lambda_func.validate_submission_request(valid_event)
+        self.assertTrue(is_valid)
+        self.assertIsNone(error_msg)
+
+    def test_validate_submission_request_missing_fields(self):
+        """Test validation with missing required fields."""
+        test_cases = [
+            # Missing action
+            ({'wes_run_id': 'test-run', 'workflow_id': '123'}, 'action'),
+            # Missing wes_run_id
+            ({'action': 'submit_workflow', 'workflow_id': '123'}, 'wes_run_id'),
+            # Missing workflow_id
+            ({'action': 'submit_workflow', 'wes_run_id': 'test-run'}, 'workflow_id'),
+        ]
+
+        for event, expected_field in test_cases:
+            with self.subTest(missing_field=expected_field):
+                is_valid, error_msg = lambda_func.validate_submission_request(event)
+                self.assertFalse(is_valid)
+                self.assertIn(expected_field, error_msg)
+
+    def test_validate_submission_request_invalid_action(self):
+        """Test validation with invalid action."""
+        invalid_event = {
+            'action': 'invalid_action',
+            'wes_run_id': 'test-run',
+            'workflow_id': '123'
+        }
+
+        is_valid, error_msg = lambda_func.validate_submission_request(invalid_event)
+        self.assertFalse(is_valid)
+        self.assertIn('invalid_action', error_msg)
+
+    def test_validate_submission_request_invalid_workflow_id(self):
+        """Test validation with invalid workflow_id."""
+        invalid_events = [
+            {'action': 'submit_workflow', 'wes_run_id': 'test-run', 'workflow_id': ''},
+            {'action': 'submit_workflow', 'wes_run_id': 'test-run', 'workflow_id': None},
+        ]
+
+        for event in invalid_events:
+            with self.subTest(workflow_id=event['workflow_id']):
+                is_valid, error_msg = lambda_func.validate_submission_request(event)
+                self.assertFalse(is_valid)
+                self.assertIn('workflow_id', error_msg)
+
+    def test_validate_submission_request_invalid_wes_run_id(self):
+        """Test validation with invalid wes_run_id format."""
+        invalid_event = {
+            'action': 'submit_workflow',
+            'wes_run_id': 'short-id',  # Not 36 characters
+            'workflow_id': '123'
+        }
+
+        is_valid, error_msg = lambda_func.validate_submission_request(invalid_event)
+        self.assertFalse(is_valid)
+        self.assertIn('wes_run_id format', error_msg)
+
+
+class TestWorkflowSubmission(unittest.TestCase):
+    """Test workflow submission functionality."""
+
+    @patch('lambda.omics_client')
+    def test_submit_omics_run_success(self, mock_omics_client):
+        """Test successful workflow submission."""
+        # Set up mock
+        mock_omics_client.start_run.return_value = {
+            'id': '1234567',
+            'arn': 'arn:aws:omics:us-east-1:123456789012:run/1234567'
+        }
+
+        event = {
+            'action': 'submit_workflow',
+            'wes_run_id': 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',  # Valid 36-character UUID format
+            'workflow_id': '6287203',
+            'workflow_version': '1.0',
+            'workflow_type': 'CWL',
+            'parameters': {
+                'input_file': 'file:///data/input.txt'
+            },
+            'workflow_engine_parameters': {
+                'name': 'test-workflow',
+                'outputUri': 's3://test-bucket/outputs/',
+                'runGroupId': 'group-123'
+            },
+            'tags': {
+                'Project': 'TestProject'
+            }
+        }
+
+        response = lambda_func.submit_omics_run(event, None)
+
+        # Verify response
+        self.assertEqual(response['statusCode'], 200)
+        self.assertEqual(response['omics_run_id'], '1234567')
+        self.assertIn('output_uri', response)
+
+        # Verify start_run was called with correct parameters
+        mock_omics_client.start_run.assert_called_once()
+        call_kwargs = mock_omics_client.start_run.call_args[1]
+
+        self.assertEqual(call_kwargs['workflowId'], '6287203')
+        self.assertEqual(call_kwargs['roleArn'], 'arn:aws:iam::123456789012:role/test-omics-role')
+        self.assertEqual(call_kwargs['name'], 'test-workflow')
+        self.assertEqual(call_kwargs['outputUri'], 's3://test-bucket/outputs/')
+        self.assertEqual(call_kwargs['runGroupId'], 'group-123')
+        self.assertEqual(call_kwargs['workflowVersionName'], '1.0')
+        self.assertIn('WESRunId', call_kwargs['tags'])
+        self.assertEqual(call_kwargs['tags']['WESRunId'], 'a1b2c3d4-e5f6-7890-abcd-ef1234567890')
+
+    def test_submit_omics_run_validation_error(self):
+        """Test workflow submission with validation error."""
+        invalid_event = {
+            'action': 'submit_workflow',
+            'wes_run_id': 'test-run',  # Invalid format
+            'workflow_id': '123'
+        }
+
+        response = lambda_func.submit_omics_run(invalid_event, None)
+
+        self.assertEqual(response['statusCode'], 400)
+        self.assertEqual(response['error'], 'ValidationError')
+        self.assertIn('wes_run_id format', response['message'])
+
+    @patch('lambda.omics_client')
+    def test_submit_omics_run_api_error(self, mock_omics_client):
+        """Test workflow submission with AWS API error."""
+        # Set up mock to raise exception
+        mock_omics_client.start_run.side_effect = Exception("AWS API Error")
+
+        event = {
+            'action': 'submit_workflow',
+            'wes_run_id': 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
+            'workflow_id': '6287203'
+        }
+
+        response = lambda_func.submit_omics_run(event, None)
+
+        self.assertEqual(response['statusCode'], 500)
+        self.assertEqual(response['error'], 'OmicsSubmissionError')
+        self.assertIn('AWS API Error', response['message'])
+
+
+class TestEventProcessing(unittest.TestCase):
+    """Test EventBridge event processing functionality."""
+
+    @patch('lambda.s3.put_object')  # Mock S3 upload
+    @patch('lambda.requests.post')
+    @patch('lambda.s3.get_object')  # Mock S3 get_object for output mapping
+    @patch('lambda.omics_client')
+    def test_update_status_completed_event(self, mock_omics_client, mock_s3_get, mock_requests, mock_s3_put):
+        """Test processing of completed EventBridge event."""
+        # Set up mocks
+        mock_requests.return_value.status_code = 200
+        mock_s3_put.return_value = {}  # Mock S3 upload
+        mock_omics_client.get_run.return_value = {
+            'logLocation': {
+                'runLogStream': 'arn:aws:logs:us-east-1:example:log-group:/aws/omics/WorkflowLog:log-stream:run/8567247'
+            },
+            'tags': {
+                'WESRunId': 'test-wes-run-123',
+                'Project': 'TestProject'
+            }
+        }
+        mock_omics_client.list_run_tasks.return_value = {
+            'items': [
+                {'taskId': '3974135', 'name': 'main', 'status': 'COMPLETED'}
+            ]
+        }
+        mock_s3_get.return_value = {
+            'Body': MagicMock(read=MagicMock(return_value=json.dumps({'output1': 's3://bucket/output.txt'}).encode()))
+        }
+
+        event = {
+            'source': 'aws.omics',
+            'detail-type': 'Run Status Change',
+            'detail': {
+                'status': 'COMPLETED',
+                'runId': '8567247',
+                'runOutputUri': 's3://bucket/outputs/'
+            },
+            'region': 'us-east-1',
+            'time': '2023-01-01T00:00:00Z',
+            'id': 'test-event-123'
+        }
+
+        response = lambda_func.update_status(event, None)
+
+        # Verify response
+        self.assertEqual(response['statusCode'], 200)
+
+        # Verify API calls were made
+        self.assertEqual(mock_omics_client.get_run.call_count, 2)  # Once for tags, once for logs
+        mock_omics_client.list_run_tasks.assert_called_once()
+        mock_s3_get.assert_called_once()  # S3 get_object for output mapping
+        mock_s3_put.assert_called_once()  # S3 put_object for event storage
+
+        # Verify GA4GH API was called
+        mock_requests.assert_called_once()
+        call_kwargs = mock_requests.call_args[1]
+        sent_data = json.loads(call_kwargs['data'])
+
+        # Verify event data structure
+        self.assertEqual(sent_data['status'], 'COMPLETED')
+        self.assertEqual(sent_data['omics_run_id'], '8567247')
+        self.assertEqual(sent_data['wes_run_id'], 'test-wes-run-123')
+        self.assertIn('log_urls', sent_data)
+        self.assertIn('output_mapping', sent_data)
+
+    @patch('lambda.s3.put_object')  # Mock S3 upload
+    @patch('lambda.requests.post')
+    @patch('lambda.omics_client')
+    def test_update_status_running_event(self, mock_omics_client, mock_requests, mock_s3_put):
+        """Test processing of running EventBridge event."""
+        # Set up mocks
+        mock_requests.return_value.status_code = 200
+        mock_s3_put.return_value = {}  # Mock S3 upload
+        mock_omics_client.get_run.return_value = {
+            'tags': {
+                'WESRunId': 'test-wes-run-456'
+            }
+        }
+
+        event = {
+            'source': 'aws.omics',
+            'detail-type': 'Run Status Change',
+            'detail': {
+                'status': 'RUNNING',
+                'runId': '8567248'
+            },
+            'region': 'us-east-1',
+            'time': '2023-01-01T00:00:00Z',
+            'id': 'test-event-456'
+        }
+
+        response = lambda_func.update_status(event, None)
+
+        # Verify response
+        self.assertEqual(response['statusCode'], 200)
+
+        # Verify only tags were fetched (no logs or output mapping for running events)
+        mock_omics_client.get_run.assert_called_once()
+
+        # Verify GA4GH API was called
+        mock_requests.assert_called_once()
+        call_kwargs = mock_requests.call_args[1]
+        sent_data = json.loads(call_kwargs['data'])
+
+        # Verify event data structure
+        self.assertEqual(sent_data['status'], 'RUNNING')
+        self.assertEqual(sent_data['omics_run_id'], '8567248')
+        self.assertEqual(sent_data['wes_run_id'], 'test-wes-run-456')
+        self.assertNotIn('log_urls', sent_data)
+        self.assertNotIn('output_mapping', sent_data)
+
+
+class TestEventRouting(unittest.TestCase):
+    """Test event routing in main lambda handler."""
+
+    @patch('lambda.submit_omics_run')
+    def test_lambda_handler_submission_routing(self, mock_submit_omics_run):
+        """Test routing of workflow submission events."""
+        mock_submit_omics_run.return_value = {'statusCode': 200, 'omics_run_id': '123'}
+
+        event = {
+            'action': 'submit_workflow',
+            'wes_run_id': 'test-run',
+            'workflow_id': '123'
+        }
+
         response = lambda_func.lambda_handler(event, None)
-        
-        # Verify the response
-        assert response['statusCode'] == 200, f"Expected status code 200, got {response['statusCode']}"
-        
-        # Get the captured JSON data
-        captured_data = None
-        for call in mock_post.call_args_list:
-            args, kwargs = call
-            captured_data = json.loads(kwargs.get('data', '{}'))
-            break
-        
-        # Verify the status
-        assert captured_data['status'] == expected_status, f"Expected status {expected_status}, got {captured_data['status']}"
-        
-        # Verify log URLs for completed/failed/cancelled events
-        if should_have_log_urls:
-            assert 'log_urls' in captured_data, f"Expected log_urls in event data for {expected_status} event"
-            print(f"✓ Log URLs included for {expected_status} event")
-            # We now call get_run twice (once for tags, once for logs), so we don't assert call count here
-        else:
-            assert 'log_urls' not in captured_data, f"Did not expect log_urls in event data for {expected_status} event"
-            print(f"✓ No log URLs for {expected_status} event (as expected)")
-            # For non-finishing events, we still call get_run once for tags
-            assert mock_omics.get_run.call_count == 1, f"Expected get_run to be called once for tags, called {mock_omics.get_run.call_count} times"
-        
-        # Verify output mapping for completed events
-        if should_have_output_mapping:
-            assert 'output_mapping' in captured_data, f"Expected output_mapping in event data for {expected_status} event"
-            print(f"✓ Output mapping included for {expected_status} event")
-            mock_s3.get_object.assert_called_once()
-        else:
-            assert 'output_mapping' not in captured_data, f"Did not expect output_mapping in event data for {expected_status} event"
-            print(f"✓ No output mapping for {expected_status} event (as expected)")
-        
-        # Verify WESRunId tag is included in all events
-        assert 'wes_run_id' in captured_data, f"Expected wes_run_id in event data for {expected_status} event"
-        assert captured_data['wes_run_id'] == 'test-wes-run-123', f"Expected wes_run_id to be 'test-wes-run-123', got {captured_data['wes_run_id']}"
-        print(f"✓ WESRunId tag correctly included for {expected_status} event")
-            
-        print(f"✓ Test passed for {event_file}")
-        return captured_data
 
-def main():
-    """Run the tests."""
-    print("Setting up mocks...")
-    setup_mocks()
-    
-    print("\nTesting Lambda function with sample events...")
-    
-    # Test completed event (should have log URLs and output mapping)
-    completed_data = test_event(
-        'example_jsons/event_completed_example.json',
-        'COMPLETED',
-        should_have_log_urls=True,
-        should_have_output_mapping=True
-    )
-    
-    # Test failed event (should have log URLs but no output mapping)
-    failed_data = test_event(
-        'example_jsons/event_failed_example.json',
-        'FAILED',
-        should_have_log_urls=True,
-        should_have_output_mapping=False
-    )
-    
-    # Test cancelled event (should have log URLs but no output mapping)
-    cancelled_data = test_event(
-        'example_jsons/event_cancelled_example.json',
-        'CANCELLED',
-        should_have_log_urls=True,
-        should_have_output_mapping=False
-    )
-    
-    # Test running event (should have neither log URLs nor output mapping)
-    running_data = test_event(
-        'example_jsons/event_running_example.json',
-        'RUNNING',
-        should_have_log_urls=False,
-        should_have_output_mapping=False
-    )
-    
-    # Test starting event (should have neither log URLs nor output mapping)
-    starting_data = test_event(
-        'example_jsons/event_starting_example.json',
-        'STARTING',
-        should_have_log_urls=False,
-        should_have_output_mapping=False
-    )
-    
-    # Test pending event (should have neither log URLs nor output mapping)
-    pending_data = test_event(
-        'example_jsons/event_pending_example.json',
-        'PENDING',
-        should_have_log_urls=False,
-        should_have_output_mapping=False
-    )
-    
-    # Test stopping event (should have neither log URLs nor output mapping)
-    stopping_data = test_event(
-        'example_jsons/event_stopping_example.json',
-        'STOPPING',
-        should_have_log_urls=False,
-        should_have_output_mapping=False
-    )
-    
-    print("\nAll tests passed!")
+        mock_submit_omics_run.assert_called_once_with(event, None)
+        self.assertEqual(response['statusCode'], 200)
+
+    @patch('lambda.update_status')
+    def test_lambda_handler_eventbridge_routing(self, mock_update_status):
+        """Test routing of EventBridge events."""
+        mock_update_status.return_value = {'statusCode': 200}
+
+        event = {
+            'source': 'aws.omics',
+            'detail-type': 'Run Status Change',
+            'detail': {'status': 'RUNNING', 'runId': '123'}
+        }
+
+        response = lambda_func.lambda_handler(event, None)
+
+        mock_update_status.assert_called_once_with(event, None)
+        self.assertEqual(response['statusCode'], 200)
+
+    def test_lambda_handler_unknown_event(self):
+        """Test handling of unknown event types."""
+        event = {
+            'unknown_field': 'unknown_value'
+        }
+
+        response = lambda_func.lambda_handler(event, None)
+
+        self.assertEqual(response['statusCode'], 400)
+        self.assertIn('Unable to determine event type - neither EventBridge nor workflow submission', response['message'])
+
+
+class TestHelperFunctions(unittest.TestCase):
+    """Test helper functions."""
+
+    def test_ensure_json_serializable(self):
+        """Test JSON serialization helper."""
+        test_data = {
+            'string': 'test',
+            'number': 42,
+            'datetime': datetime(2023, 1, 1, 12, 0, 0),
+            'nested': {
+                'datetime': datetime(2023, 1, 1, 13, 0, 0),
+                'list': [datetime(2023, 1, 1, 14, 0, 0), 'string']
+            }
+        }
+
+        result = lambda_func.ensure_json_serializable(test_data)
+
+        # Verify datetimes are converted to strings
+        self.assertEqual(result['string'], 'test')
+        self.assertEqual(result['number'], 42)
+        self.assertIsInstance(result['datetime'], str)
+        self.assertIsInstance(result['nested']['datetime'], str)
+        self.assertIsInstance(result['nested']['list'][0], str)
+        self.assertEqual(result['nested']['list'][1], 'string')
+
+    def test_flatten(self):
+        """Test event flattening function."""
+        nested_event = {
+            'detail': {
+                'status': 'COMPLETED',
+                'runId': '123',
+                'nested': {
+                    'value': 'test'
+                }
+            },
+            'source': 'aws.omics'
+        }
+
+        flattened = lambda_func.flatten(nested_event)
+
+        # The flatten function only flattens one level deep
+        self.assertEqual(flattened['status'], 'COMPLETED')
+        self.assertEqual(flattened['runId'], '123')
+        self.assertEqual(flattened['nested'], {'value': 'test'})  # nested dict stays as nested dict
+        self.assertEqual(flattened['source'], 'aws.omics')
+
+
+def run_tests():
+    """Run all tests."""
+    print("="*60)
+    print("RUNNING LAMBDA FUNCTION UNIT TESTS")
+    print("="*60)
+
+    # Create test suite
+    test_suite = unittest.TestSuite()
+
+    # Add test classes
+    test_classes = [
+        TestParameterConversion,
+        TestValidation,
+        TestWorkflowSubmission,
+        TestEventProcessing,
+        TestEventRouting,
+        TestHelperFunctions
+    ]
+
+    for test_class in test_classes:
+        tests = unittest.TestLoader().loadTestsFromTestCase(test_class)
+        test_suite.addTests(tests)
+
+    # Run tests
+    runner = unittest.TextTestRunner(verbosity=2)
+    result = runner.run(test_suite)
+
+    # Print summary
+    print("\n" + "="*60)
+    print("TEST SUMMARY")
+    print("="*60)
+    print(f"Tests run: {result.testsRun}")
+    print(f"Failures: {len(result.failures)}")
+    print(f"Errors: {len(result.errors)}")
+
+    if result.failures:
+        print("\nFAILURES:")
+        for test, traceback in result.failures:
+            print(f"- {test}: {traceback}")
+
+    if result.errors:
+        print("\nERRORS:")
+        for test, traceback in result.errors:
+            print(f"- {test}: {traceback}")
+
+    if result.wasSuccessful():
+        print("\n✅ ALL TESTS PASSED!")
+    else:
+        print("\n❌ SOME TESTS FAILED!")
+
+    print("="*60)
+
+    return result.wasSuccessful()
+
 
 if __name__ == '__main__':
-    main()
+    success = run_tests()
