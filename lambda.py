@@ -353,12 +353,14 @@ def validate_submission_request(event):
     Returns:
         tuple: (is_valid, error_message)
     """
-    required_fields = ['action', 'wes_run_id', 'workflow_id']
+    required_fields = ['action', 'wes_run_id', 'workflow_id', 'workflow_engine_parameters']
 
     # Make sure the event contains all required fields
     for field in required_fields:
         if field not in event:
             return False, f"Missing required field: {field}"
+    if 'outputUri' not in event.get('workflow_engine_parameters'):
+        return False, f"Missing required field: outputUri"
 
     # The only supported action is 'submit_workflow' for now
     if event['action'] != 'submit_workflow':
@@ -368,11 +370,6 @@ def validate_submission_request(event):
     workflow_id = event.get('workflow_id', '')
     if not workflow_id or len(workflow_id) < 1:
         return False, f"Invalid workflow_id: {workflow_id}. Workflow ID is required"
-
-    # Validate wes_run_id - it should be a UUID string (36 characters)
-    wes_run_id = event.get('wes_run_id', '')
-    if len(wes_run_id) != 36:
-        return False, f"Invalid wes_run_id format: {wes_run_id}. Must be 36 characters"
 
     return True, None
 
@@ -388,116 +385,43 @@ def submit_omics_run(event, context):
         # Validate input parameters
         is_valid, error_msg = validate_submission_request(event)
         if not is_valid:
-            logger.error(f"Validation error: {error_msg}")
-            return {
-                'statusCode': 400,
-                'error': 'ValidationError',
-                'message': error_msg
-            }
+            return {'statusCode': 400, 'error': 'ValidationError', 'message': error_msg}
 
         # Extract parameters
         wes_run_id = event['wes_run_id']
         workflow_id = event['workflow_id']
-        workflow_version = event.get('workflow_version')  # Optional workflow version
-        workflow_type = event.get('workflow_type', 'CWL')
-        wes_params = event.get('parameters', {})
         workflow_engine_params = event.get('workflow_engine_parameters', {})
-        tags = event.get('tags', {})
 
-        logger.info(f"Processing workflow submission: wes_run_id={wes_run_id}, "
-                    f"workflow_id={workflow_id}, workflow_version={workflow_version}")
+        # Set output URI - use provided or default
+        output_uri = workflow_engine_params.get('outputUri')
 
-        # Validate that we have required parameters
-        output_bucket = os.environ.get('DATA_LAKE_BUCKET')
-        if not output_bucket:
-            raise ValueError("DATA_LAKE_BUCKET environment variable is required for output storage")
-
-        role_arn = os.environ.get('OMICS_ROLE_ARN')
-        if not role_arn:
-            raise ValueError("OMICS_ROLE_ARN environment variable is required")
-
-        # Set default output URI if not provided in workflow_engine_parameters
-        # Following the same logic as omics.py execute method
-        output_uri = None
-        if workflow_engine_params and 'outputUri' in workflow_engine_params:
-            output_uri = workflow_engine_params['outputUri']
-            logger.info(f"Using output URI from workflow_engine_parameters: {output_uri}")
-        else:
-            output_uri = f"{output_bucket}/runs/{wes_run_id}/output/"
-            logger.info(f"Using default output URI: {output_uri}")
-
-        # Prepare Omics start_run parameters following omics.py format
+        # Build basic Omics parameters
         kwargs = {
             'workflowId': workflow_id,
-            'roleArn': role_arn,
-            'parameters': wes_params,
+            'roleArn': os.environ['OMICS_ROLE_ARN'],
+            'parameters': event.get('parameters', {}),
             'outputUri': output_uri,
-            'name': f"wes-run-{wes_run_id}",
+            'name': workflow_engine_params.get('name', f"wes-run-{wes_run_id}"),
+            'tags': {'WESRunId': wes_run_id, **event.get('tags', {})},
             'retentionMode': 'REMOVE',
             'storageType': 'DYNAMIC'
         }
 
-        # Add workflow version if specified
-        if workflow_version:
-            kwargs['workflowVersionName'] = workflow_version
-            logger.info(f"Using workflow version: {workflow_version}")
+        # Override name if provided in tags
+        if "Name" in kwargs['tags']:
+            kwargs['name'] = kwargs['tags']['Name']
 
-        # Add tags from the event, ensuring WESRunId is included
-        if tags and len(tags) > 0:
-            # Ensure WESRunId is in tags
-            if 'WESRunId' not in tags:
-                tags['WESRunId'] = wes_run_id
-            kwargs['tags'] = tags
-            logger.info(f"Adding tags to Omics run: {tags}")
+        # Add optional parameters if provided
+        if event.get('workflow_version'):
+            kwargs['workflowVersionName'] = event['workflow_version']
+        if 'cacheId' in workflow_engine_params:
+            kwargs['cacheId'] = workflow_engine_params['cacheId']
 
-            # Override name if provided in tags
-            if "Name" in tags:
-                kwargs['name'] = tags.get("Name")
-        else:
-            # Ensure WESRunId tag is always present
-            kwargs['tags'] = {'WESRunId': wes_run_id}
-
-        # Extract and add Omics-specific parameters from workflow_engine_parameters
-        # Following the same logic as omics.py execute method
-        if workflow_engine_params:
-            engine_params = workflow_engine_params
-
-            # Override name if provided
-            if 'name' in engine_params:
-                kwargs['name'] = engine_params['name']
-
-            # Add run group ID if specified
-            if 'runGroupId' in engine_params:
-                kwargs['runGroupId'] = engine_params['runGroupId']
-                logger.info(f"Using run group ID: {engine_params['runGroupId']}")
-
-            # Add cache ID for reusing previous runs
-            if 'cacheId' in engine_params:
-                kwargs['cacheId'] = engine_params['cacheId']
-                logger.info(f"Using cached run ID: {engine_params['cacheId']}")
-
-            # Add tags if provided (merge with existing tags)
-            if 'tags' in engine_params:
-                kwargs['tags'].update(engine_params['tags'])
-
-            # Add other supported parameters from omics.py
-            omics_engine_params = [
-                'priority', 'storageCapacity', 'accelerators', 'logLevel', 'storageType'
-            ]
-            for param in omics_engine_params:
-                if param in engine_params:
-                    kwargs[param] = engine_params[param]
-
-        # Log the API call parameters (same as omics.py)
-        logger.info(f"Starting Omics run with parameters: {kwargs}")
-
-        # Make the API call to start the run (same as omics.py)
+        # Submit to Omics
         response = omics_client.start_run(**kwargs)
-
-        # Store the Omics run ID
         omics_run_id = response['id']
-        log_msg = f"Started AWS Omics run: {omics_run_id}, output will be in: {output_uri}"
-        logger.info(f"WES run {wes_run_id}: {log_msg}")
+
+        logger.info(f"Started Omics run {omics_run_id} for WES run {wes_run_id}")
 
         return {
             'statusCode': 200,
@@ -508,12 +432,8 @@ def submit_omics_run(event, context):
         }
 
     except Exception as e:
-        logger.error(f"Error in workflow submission: {str(e)}")
-        return {
-            'statusCode': 500,
-            'error': 'OmicsSubmissionError',
-            'message': f'Failed to submit workflow to Omics: {str(e)}'
-        }
+        logger.error(f"Error submitting workflow: {str(e)}")
+        return {'statusCode': 500, 'error': 'OmicsSubmissionError', 'message': str(e)}
 
 
 def update_status(event, context):
