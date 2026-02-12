@@ -343,86 +343,6 @@ def ensure_json_serializable(obj):
         return str(obj)
 
 
-def convert_file_path_to_s3(file_path):
-    """
-    Convert file path to S3 URI if needed.
-
-    Args:
-        file_path: File path (can be file://, s3://, or NGS360: format)
-
-    Returns:
-        S3 URI
-    """
-    if file_path.startswith('s3://'):
-        return file_path
-    elif file_path.startswith('file://'):
-        # Remove file:// prefix and convert to S3 path
-        # This is a simplified conversion - in production you'd need proper path mapping
-        local_path = file_path[7:]  # Remove 'file://'
-        # For now, assume it's already in the right bucket structure
-        return f"s3://bucket-name{local_path}"
-    elif file_path.startswith('NGS360:'):
-        # Handle NGS360 file IDs - convert to actual S3 paths
-        # This would need integration with NGS360 file service
-        file_id = file_path[7:]  # Remove 'NGS360:'
-        return f"s3://ngs360-files/{file_id}"
-    else:
-        # Assume it's already a valid S3 URI or local path
-        return file_path
-
-
-def convert_wes_params_to_omics(wes_params):
-    """
-    Convert WES workflow parameters to Omics format.
-
-    Args:
-        wes_params: Dictionary of WES workflow parameters
-
-    Returns:
-        Dictionary of Omics-formatted parameters
-    """
-    omics_params = {}
-
-    for key, value in wes_params.items():
-        if key == 'workflow_id':
-            continue  # Exclude workflow_id from parameters
-
-        if isinstance(value, dict) and 'class' in value:
-            # CWL File/Directory object
-            converted_value = value.copy()
-            if 'path' in converted_value:
-                converted_value['path'] = convert_file_path_to_s3(converted_value['path'])
-            omics_params[key] = converted_value
-
-        elif isinstance(value, list):
-            # Array of files/values
-            processed_list = []
-            for item in value:
-                if isinstance(item, dict) and 'path' in item:
-                    converted_item = item.copy()
-                    converted_item['path'] = convert_file_path_to_s3(converted_item['path'])
-                    processed_list.append(converted_item)
-                elif isinstance(item, str) and (item.startswith('file://') or
-                                                item.startswith('NGS360:') or
-                                                item.startswith('s3://')):
-                    processed_list.append(convert_file_path_to_s3(item))
-                else:
-                    processed_list.append(item)
-            omics_params[key] = processed_list
-
-        elif isinstance(value, str) and (value.startswith('file://') or
-                                         value.startswith('NGS360:') or
-                                         value.startswith('s3://')):
-            # Simple file path
-            omics_params[key] = convert_file_path_to_s3(value)
-
-        else:
-            # Other parameters (strings, numbers, booleans)
-            omics_params[key] = value
-
-    return omics_params
-
-
 def validate_submission_request(event):
     """
     Validate workflow submission request.
@@ -487,14 +407,12 @@ def submit_omics_run(event, context):
         logger.info(f"Processing workflow submission: wes_run_id={wes_run_id}, "
                     f"workflow_id={workflow_id}, workflow_version={workflow_version}")
 
-        # Convert WES parameters to Omics format using the same logic as omics.py
-        omics_params = convert_wes_params_to_omics(wes_params)
-        logger.info(f"Converted parameters for Omics: {json.dumps(omics_params, default=str)}")
-
         # Set default output URI if not provided in workflow_engine_parameters
         # Following the same logic as omics.py execute method
         output_uri = None
-        output_bucket = os.environ.get('DATA_LAKE_BUCKET', 's3://ngs360-omics-data-lake')
+        output_bucket = os.environ.get('DATA_LAKE_BUCKET')
+        if not output_bucket:
+            raise ValueError("DATA_LAKE_BUCKET environment variable is required for output storage")
 
         if workflow_engine_params and 'outputUri' in workflow_engine_params:
             output_uri = workflow_engine_params['outputUri']
@@ -507,7 +425,7 @@ def submit_omics_run(event, context):
         kwargs = {
             'workflowId': workflow_id,
             'roleArn': os.environ.get('OMICS_ROLE_ARN'),
-            'parameters': omics_params,
+            'parameters': wes_params,
             'outputUri': output_uri,
             'name': f"wes-run-{wes_run_id}",
             'retentionMode': 'REMOVE',

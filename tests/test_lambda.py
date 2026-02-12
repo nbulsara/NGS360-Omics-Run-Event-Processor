@@ -33,68 +33,6 @@ with patch('boto3.client') as mock_boto3_client:
     lambda_func = importlib.import_module('lambda')
 
 
-class TestParameterConversion(unittest.TestCase):
-    """Test parameter conversion functions."""
-
-    def test_convert_file_path_to_s3(self):
-        """Test file path conversion to S3 URIs."""
-        test_cases = [
-            ('file:///data/input.txt', 's3://bucket-name/data/input.txt'),
-            ('NGS360:/references/hg38.fa', 's3://ngs360-files//references/hg38.fa'),
-            ('s3://existing-bucket/file.txt', 's3://existing-bucket/file.txt'),
-            ('regular_file.txt', 'regular_file.txt'),
-            ('', ''),  # Edge case: empty string
-        ]
-
-        for input_path, expected_output in test_cases:
-            with self.subTest(input_path=input_path):
-                result = lambda_func.convert_file_path_to_s3(input_path)
-                self.assertEqual(result, expected_output)
-
-    def test_convert_wes_params_to_omics(self):
-        """Test WES parameter conversion to Omics format."""
-        wes_params = {
-            'input_file': 'file:///data/input.txt',
-            'reference': {
-                'class': 'File',
-                'path': 'NGS360:/references/hg38.fa'
-            },
-            'file_array': [
-                {'class': 'File', 'path': 'file:///data/file1.txt'},
-                {'class': 'File', 'path': 'file:///data/file2.txt'}
-            ],
-            'simple_string_array': [
-                'file:///data/string1.txt',
-                'NGS360:/data/string2.txt'
-            ],
-            'simple_param': 'test_value',
-            'number_param': 42,
-            'workflow_id': 'should_be_excluded'
-        }
-
-        converted = lambda_func.convert_wes_params_to_omics(wes_params, 'CWL')
-
-        # Verify file path conversions (based on actual convert_file_path_to_s3 implementation)
-        self.assertEqual(converted['input_file'], 's3://bucket-name/data/input.txt')
-        self.assertEqual(converted['reference']['path'], 's3://ngs360-files//references/hg38.fa')
-
-        # Verify array handling
-        self.assertEqual(len(converted['file_array']), 2)
-        self.assertEqual(converted['file_array'][0]['path'], 's3://bucket-name/data/file1.txt')
-        self.assertEqual(converted['file_array'][1]['path'], 's3://bucket-name/data/file2.txt')
-
-        # Verify string array conversion
-        self.assertEqual(converted['simple_string_array'][0], 's3://bucket-name/data/string1.txt')
-        self.assertEqual(converted['simple_string_array'][1], 's3://ngs360-files//data/string2.txt')
-
-        # Verify other parameters preserved
-        self.assertEqual(converted['simple_param'], 'test_value')
-        self.assertEqual(converted['number_param'], 42)
-
-        # Verify workflow_id excluded
-        self.assertNotIn('workflow_id', converted)
-
-
 class TestValidation(unittest.TestCase):
     """Test validation functions."""
 
