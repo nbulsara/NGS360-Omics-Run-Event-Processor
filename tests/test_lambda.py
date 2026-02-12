@@ -40,8 +40,11 @@ class TestValidation(unittest.TestCase):
         """Test validation with valid submission request."""
         valid_event = {
             'action': 'submit_workflow',
-            'wes_run_id': 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',  # Valid 36-character UUID format
-            'workflow_id': '6287203'
+            'wes_run_id': 'test-wes-run-123',
+            'workflow_id': '6287203',
+            'workflow_engine_parameters': {
+                'outputUri': 's3://test-bucket/outputs/'
+            }
         }
 
         is_valid, error_msg = lambda_func.validate_submission_request(valid_event)
@@ -52,11 +55,15 @@ class TestValidation(unittest.TestCase):
         """Test validation with missing required fields."""
         test_cases = [
             # Missing action
-            ({'wes_run_id': 'test-run', 'workflow_id': '123'}, 'action'),
+            ({'wes_run_id': 'test-run', 'workflow_id': '123', 'workflow_engine_parameters': {'outputUri': 's3://test/'}}, 'action'),
             # Missing wes_run_id
-            ({'action': 'submit_workflow', 'workflow_id': '123'}, 'wes_run_id'),
+            ({'action': 'submit_workflow', 'workflow_id': '123', 'workflow_engine_parameters': {'outputUri': 's3://test/'}}, 'wes_run_id'),
             # Missing workflow_id
-            ({'action': 'submit_workflow', 'wes_run_id': 'test-run'}, 'workflow_id'),
+            ({'action': 'submit_workflow', 'wes_run_id': 'test-run', 'workflow_engine_parameters': {'outputUri': 's3://test/'}}, 'workflow_id'),
+            # Missing workflow_engine_parameters
+            ({'action': 'submit_workflow', 'wes_run_id': 'test-run', 'workflow_id': '123'}, 'workflow_engine_parameters'),
+            # Missing outputUri in workflow_engine_parameters
+            ({'action': 'submit_workflow', 'wes_run_id': 'test-run', 'workflow_id': '123', 'workflow_engine_parameters': {}}, 'outputUri'),
         ]
 
         for event, expected_field in test_cases:
@@ -70,7 +77,8 @@ class TestValidation(unittest.TestCase):
         invalid_event = {
             'action': 'invalid_action',
             'wes_run_id': 'test-run',
-            'workflow_id': '123'
+            'workflow_id': '123',
+            'workflow_engine_parameters': {'outputUri': 's3://test/'}
         }
 
         is_valid, error_msg = lambda_func.validate_submission_request(invalid_event)
@@ -80,8 +88,8 @@ class TestValidation(unittest.TestCase):
     def test_validate_submission_request_invalid_workflow_id(self):
         """Test validation with invalid workflow_id."""
         invalid_events = [
-            {'action': 'submit_workflow', 'wes_run_id': 'test-run', 'workflow_id': ''},
-            {'action': 'submit_workflow', 'wes_run_id': 'test-run', 'workflow_id': None},
+            {'action': 'submit_workflow', 'wes_run_id': 'test-run', 'workflow_id': '', 'workflow_engine_parameters': {'outputUri': 's3://test/'}},
+            {'action': 'submit_workflow', 'wes_run_id': 'test-run', 'workflow_id': None, 'workflow_engine_parameters': {'outputUri': 's3://test/'}},
         ]
 
         for event in invalid_events:
@@ -89,18 +97,6 @@ class TestValidation(unittest.TestCase):
                 is_valid, error_msg = lambda_func.validate_submission_request(event)
                 self.assertFalse(is_valid)
                 self.assertIn('workflow_id', error_msg)
-
-    def test_validate_submission_request_invalid_wes_run_id(self):
-        """Test validation with invalid wes_run_id format."""
-        invalid_event = {
-            'action': 'submit_workflow',
-            'wes_run_id': 'short-id',  # Not 36 characters
-            'workflow_id': '123'
-        }
-
-        is_valid, error_msg = lambda_func.validate_submission_request(invalid_event)
-        self.assertFalse(is_valid)
-        self.assertIn('wes_run_id format', error_msg)
 
 
 class TestWorkflowSubmission(unittest.TestCase):
@@ -117,7 +113,7 @@ class TestWorkflowSubmission(unittest.TestCase):
 
         event = {
             'action': 'submit_workflow',
-            'wes_run_id': 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',  # Valid 36-character UUID format
+            'wes_run_id': 'test-wes-run-123',
             'workflow_id': '6287203',
             'workflow_version': '1.0',
             'workflow_type': 'CWL',
@@ -127,7 +123,7 @@ class TestWorkflowSubmission(unittest.TestCase):
             'workflow_engine_parameters': {
                 'name': 'test-workflow',
                 'outputUri': 's3://test-bucket/outputs/',
-                'runGroupId': 'group-123'
+                'cacheId': 'cache-123'
             },
             'tags': {
                 'Project': 'TestProject'
@@ -149,24 +145,25 @@ class TestWorkflowSubmission(unittest.TestCase):
         self.assertEqual(call_kwargs['roleArn'], 'arn:aws:iam::123456789012:role/test-omics-role')
         self.assertEqual(call_kwargs['name'], 'test-workflow')
         self.assertEqual(call_kwargs['outputUri'], 's3://test-bucket/outputs/')
-        self.assertEqual(call_kwargs['runGroupId'], 'group-123')
+        self.assertEqual(call_kwargs['cacheId'], 'cache-123')
         self.assertEqual(call_kwargs['workflowVersionName'], '1.0')
         self.assertIn('WESRunId', call_kwargs['tags'])
-        self.assertEqual(call_kwargs['tags']['WESRunId'], 'a1b2c3d4-e5f6-7890-abcd-ef1234567890')
+        self.assertEqual(call_kwargs['tags']['WESRunId'], 'test-wes-run-123')
 
     def test_submit_omics_run_validation_error(self):
         """Test workflow submission with validation error."""
         invalid_event = {
             'action': 'submit_workflow',
-            'wes_run_id': 'test-run',  # Invalid format
-            'workflow_id': '123'
+            'wes_run_id': 'test-run',
+            'workflow_id': '123',
+            # Missing workflow_engine_parameters
         }
 
         response = lambda_func.submit_omics_run(invalid_event, None)
 
         self.assertEqual(response['statusCode'], 400)
         self.assertEqual(response['error'], 'ValidationError')
-        self.assertIn('wes_run_id format', response['message'])
+        self.assertIn('workflow_engine_parameters', response['message'])
 
     @patch('lambda.omics_client')
     def test_submit_omics_run_api_error(self, mock_omics_client):
@@ -176,8 +173,11 @@ class TestWorkflowSubmission(unittest.TestCase):
 
         event = {
             'action': 'submit_workflow',
-            'wes_run_id': 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
-            'workflow_id': '6287203'
+            'wes_run_id': 'test-run-123',
+            'workflow_id': '6287203',
+            'workflow_engine_parameters': {
+                'outputUri': 's3://test-bucket/outputs/'
+            }
         }
 
         response = lambda_func.submit_omics_run(event, None)
