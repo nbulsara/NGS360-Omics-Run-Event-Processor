@@ -3,6 +3,10 @@ STACK_NAME=ngs360-omics-run-event-pr-OmicsRunEventProcessorFu-BQJMqXfWNdMS
 BUCKET=bmsrd-ngs-omics
 BUCKET_PREFIX=omics-run-events
 
+test:
+	python3 -m pytest -vv --cov ./
+	coverage html
+
 create-lambda-package:
 	# Get git short hash for versioning
 	$(eval VER := $(shell git log -1 --pretty=format:"%h"))

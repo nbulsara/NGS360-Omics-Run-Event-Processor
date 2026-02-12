@@ -9,7 +9,7 @@ import json
 import os
 import sys
 import unittest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 from datetime import datetime
 
 # Add the parent directory to the path so we can import the lambda module

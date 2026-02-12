@@ -241,6 +241,7 @@ def get_run_tags(run_id, logger):
         logger.error(f"Error getting tags for run {run_id}: {str(e)}")
         return {}
 
+
 def fetch_output_mapping(output_uri, run_id, logger):
     """
     Fetch output mapping from S3.
@@ -626,6 +627,8 @@ def update_status(event, context):
     run_id = flat_event.get('runId')
     region = flat_event.get('region', 'us-east-1')
 
+    # When will run_id be missing? In the current EventBridge events, runId is always present.
+    # But we add this check just in case for future changes or different event types.
     if run_id:
         try:
             tags = get_run_tags(run_id, logger)
@@ -635,9 +638,7 @@ def update_status(event, context):
         except Exception as e:
             logger.error(f"Error getting tags for run {run_id}: {str(e)}")
 
-    logging.info('checkpoint1')
-
-    # For finishing events (COMPLETED, FAILED, CANCELLED), add additional information
+    # If a run completes, get additional information e.g. log URLs, output mapping
     if status in ['COMPLETED', 'FAILED', 'CANCELLED'] and run_id:
         logger.info(f"Processing {status} event for run {run_id}")
 
@@ -668,9 +669,6 @@ def update_status(event, context):
     # Convert flattened dict to JSON string
     json_data = json.dumps(data)
 
-    logging.info('checkpoint2')
-    logging.info(json_data)
-
     # Upload to S3
     s3.put_object(
         Bucket=DATA_LAKE_BUCKET,
@@ -680,14 +678,10 @@ def update_status(event, context):
         ServerSideEncryption='AES256'
     )
 
-    logging.info('checkpoint3')
-    logging.info(json_data)
-
     # Call GA4GH WES API Server
     api_url = f'{API_SERVER}/internal/callbacks/omics-state-change'
     headers = {'Content-Type': 'application/json'}
     headers['X-Internal-API-Key'] = AUTH_TOKEN
-    logging.info(headers)
 
     try:
         response = requests.post(api_url, headers=headers, data=json_data, timeout=10)
@@ -709,7 +703,25 @@ def update_status(event, context):
 def lambda_handler(event, context):
     """
     Main entry point for Lambda function.
-    Routes requests to appropriate handler based on event type.
+
+    The goal of this entry point is to handle workflow submissions from GA4GH
+    WES API and handle workflow status updates from aws.omics via EventBridge.
+
+    The event structure will be for GA4GH workflow submissions:
+    {
+        'action': 'submit_workflow',
+    }
+    or EventBridge events
+    {
+        'source': 'aws.omics',
+        'detail-type': 'Run Status Change',
+        'detail': {
+            'runId': 'string',
+            'status': 'string',
+            ...
+        },
+        ...
+    }
     """
     logger = setup_logging(event)
 
