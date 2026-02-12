@@ -739,9 +739,9 @@ def lambda_handler(event, context):
             return update_status(event, context)
 
         # Method 3: Fallback for existing EventBridge events (backward compatibility)
-        elif 'detail' in event and 'runId' in event.get('detail', {}):
-            logger.info("Routing to status update handler (legacy format)")
-            return update_status(event, context)
+        # elif 'detail' in event and 'runId' in event.get('detail', {}):
+        #     logger.info("Routing to status update handler (legacy format)")
+        #     return update_status(event, context)
 
         # Unknown event type
         else:
