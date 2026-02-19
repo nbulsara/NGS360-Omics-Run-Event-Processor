@@ -112,6 +112,10 @@ Resources:
                   - omics:StartRun
                   - omics:TagResource
                 Resource: "*"
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: !Ref OmicsRoleArn
 
   OmicsRunEventProcessorFunction:
     Type: AWS::Lambda::Function
