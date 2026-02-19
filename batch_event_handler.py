@@ -22,6 +22,7 @@ def post_job(job_id, job_status, log_stream_name):
         res = requests.put(url, headers=headers, data=json.dumps(message_body))
         if res.status_code != 200:
             logger.error("%s returned %s", url, res.status_code)
+            logger.error("Response: %s", res.text)
     except requests.exceptions.RequestException as e:
         logger.error(str(e))
         return False
