@@ -15,7 +15,7 @@ def post_job(job_id, job_status, log_stream_name):
     }
 
     headers = {'Content-Type': 'application/json'}
-    url = "%s/api/v1/jobs/%s" % (os.environ['NGS360_API_SERVER'], job_id)
+    url = "%s/api/v1/jobs" % (os.environ['NGS360_API_SERVER'])
 
     try:
         logger.info("PUT %s to %s", message_body, url)
