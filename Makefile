@@ -1,7 +1,8 @@
 NAME=ngs360-omics-run-event-processor
-STACK_NAME=ngs360-omics-run-event-pr-OmicsRunEventProcessorFu-BQJMqXfWNdMS
-BUCKET=bmsrd-ngs-omics
 BUCKET_PREFIX=omics-run-events
+
+# Include local configuration
+-include Makefile.local
 
 test:
 	python3 -m pytest -vv --cov ./
@@ -16,7 +17,7 @@ create-lambda-package:
 
 	mkdir -p lambda-package && \
 	cd lambda-package && \
-	cp ../lambda.py . && \
+	cp ../*.py . && \
 	pip3 install -r ../requirements.txt -t . && \
 	zip -r ../$(zipfile) .
 	aws s3 cp $(zipfile) s3://${BUCKET}/${BUCKET_PREFIX}/$(zipfile) --sse

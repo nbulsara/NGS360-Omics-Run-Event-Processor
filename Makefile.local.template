@@ -1,0 +1,3 @@
+# Copy this file to Makefile.local and fill in your values
+STACK_NAME=your-stack-name-here
+BUCKET=your-bucket-name

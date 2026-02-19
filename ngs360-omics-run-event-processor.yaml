@@ -7,6 +7,9 @@ Parameters:
   DeadLetterEmail:
     Type: String
     Description: Email address to send notifications for failed Lambda executions
+  Ngs360ApiServer:
+    Type: String
+    Description: NGS360 REST API Server URL
   ApiServer:
     Type: String
     Description: GA4GH WES API Server URL
@@ -138,6 +141,7 @@ Resources:
       Description: NGS360 Omics Run/Batch Event Processor Lambda Function
       Environment:
         Variables:
+          NGS360_API_SERVER: !Ref Ngs360ApiServer
           API_SERVER: !Ref ApiServer
           DATA_LAKE_BUCKET: !Ref DataLakeBucket
           S3_PREFIX: !Ref BucketPrefix

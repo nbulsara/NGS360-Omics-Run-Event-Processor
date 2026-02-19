@@ -16,6 +16,7 @@ from datetime import datetime
 sys.path.append('..')
 
 # Set up required environment variables before importing lambda module
+os.environ['NGS360_API_SERVER'] = 'https://api.example.com'
 os.environ['API_SERVER'] = 'https://api.example.com'
 os.environ['DATA_LAKE_BUCKET'] = 'test-bucket'
 os.environ['S3_PREFIX'] = 'omics-run-events'
@@ -393,6 +394,35 @@ class TestHelperFunctions(unittest.TestCase):
         self.assertEqual(flattened['runId'], '123')
         self.assertEqual(flattened['nested'], {'value': 'test'})  # nested dict stays as nested dict
         self.assertEqual(flattened['source'], 'aws.omics')
+
+
+class TestBatchEventProcessing(unittest.TestCase):
+    """Test batch processing of EventBridge events."""
+
+    def test_lambda_handler_batch_events(self):
+        """Test processing of multiple EventBridge events in a batch."""
+
+        # Set up test parameters
+        event = {
+            'source': 'aws.batch',
+            'version': '0',
+            'detail': {
+                'jobId': 'asdf-1234',
+                'jobName': 'test-job',
+                'status': 'SUCCEEDED',
+                'container': {
+                    'logStreamName': 'test-log-stream'
+                }
+            }
+        }
+
+        # Set up supporting mocks
+
+        # Test
+        response = lambda_func.lambda_handler(event, None)
+
+        # Check results
+        self.assertEqual(response['statusCode'], 200)
 
 
 if __name__ == '__main__':

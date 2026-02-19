@@ -3,14 +3,18 @@ import json
 from datetime import datetime
 import uuid
 import os
-import logging
 
 import boto3
 import requests
 
+from batch_event_handler import batch_event_handler
+from logger import get_logger
+
 secrets_client = boto3.client('secretsmanager')
 s3 = boto3.client('s3')
 omics_client = boto3.client('omics')
+
+logger = get_logger()
 
 
 def flatten(event):
@@ -30,27 +34,6 @@ def flatten(event):
         else:
             flat_event[key] = value
     return flat_event
-
-
-def setup_logging(event=None):
-    ''' Sets up logging configuration '''
-    VERBOSE_LOGGING = os.environ.get(
-        'VERBOSE_LOGGING', 'false'
-    ).lower() == 'true'
-    log_level = logging.DEBUG if VERBOSE_LOGGING else logging.INFO
-    logging.basicConfig(
-        level=log_level,
-        format='%(asctime)s - %(levelname)s - %(message)s'
-    )
-    logger = logging.getLogger()
-    logger.setLevel(log_level)
-
-    # Reduce boto3 logging noise
-    logging.getLogger('boto3').setLevel(logging.INFO)
-    logging.getLogger('botocore').setLevel(logging.INFO)
-    if event:
-        logger.info("Received event: %s", json.dumps(event))
-    return logger
 
 
 def get_auth_token():
@@ -379,8 +362,7 @@ def submit_omics_run(event, context):
     Handle workflow submission requests from GA4GH WES API.
     Submits new workflows to AWS Omics using the same logic as the working omics.py.
     """
-    logger = setup_logging(event)
-
+    logger.info(f"Received workflow submission request: {json.dumps(event, default=str)[:500]}...")
     try:
         # Validate input parameters
         is_valid, error_msg = validate_submission_request(event)
@@ -442,7 +424,7 @@ def update_status(event, context):
     This contains all the original lambda_handler logic.
     """
     data = {}
-    logger = setup_logging(event)
+    logger.info(f"Received EventBridge event: {json.dumps(event, default=str)[:500]}...")
 
     API_SERVER = os.environ['API_SERVER']
     AUTH_TOKEN = get_auth_token()
@@ -566,7 +548,8 @@ def lambda_handler(event, context):
         ...
     }
     """
-    logger = setup_logging(event)
+    # Log the incoming event (truncated for readability)
+    logger.info(f"Received event: {json.dumps(event, default=str)[:500]}...")
 
     try:
         # Method 1: Check for explicit workflow submission action
@@ -581,6 +564,9 @@ def lambda_handler(event, context):
             logger.info("Routing to status update handler")
             return update_status(event, context)
 
+        elif event.get('source') == 'aws.batch':
+            logger.info("Received AWS Batch event, routing to Batch handler")
+            return batch_event_handler(event)
         # Method 3: Fallback for existing EventBridge events (backward compatibility)
         # elif 'detail' in event and 'runId' in event.get('detail', {}):
         #     logger.info("Routing to status update handler (legacy format)")
