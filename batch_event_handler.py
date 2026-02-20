@@ -1,3 +1,5 @@
+import json
+
 import requests
 import os
 from logger import get_logger
@@ -17,7 +19,11 @@ def post_job(job_id, job_status, log_stream_name):
 
     try:
         logger.info("PUT %s to %s", message_body, url)
-        res = requests.put(url, json=message_body, timeout=10)
+        res = requests.put(
+            url,
+            json=message_body,
+            timeout=10
+        )
         if res.status_code != 200:
             logger.error("%s returned %s", url, res.status_code)
             logger.error("Response: %s", res.text)
