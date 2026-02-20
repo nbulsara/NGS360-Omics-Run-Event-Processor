@@ -1,5 +1,4 @@
 import requests
-import json
 import os
 from logger import get_logger
 
@@ -10,16 +9,15 @@ def post_job(job_id, job_status, log_stream_name):
     """ Post Batch job status to NGS360 REST API """
     message_body = {
         'aws_job_id': job_id,
-        'job_status': job_status,
+        'status': job_status,
         'log_stream_name': log_stream_name
     }
 
-    headers = {'Content-Type': 'application/json'}
     url = "%s/api/v1/jobs" % (os.environ['NGS360_API_SERVER'])
 
     try:
         logger.info("PUT %s to %s", message_body, url)
-        res = requests.put(url, headers=headers, data=json.dumps(message_body))
+        res = requests.put(url, json=message_body, timeout=10)
         if res.status_code != 200:
             logger.error("%s returned %s", url, res.status_code)
             logger.error("Response: %s", res.text)
