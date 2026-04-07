@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+*.egg-info
+.coverage
+htmlcov/
+.pytest_cache/
+*.venv
+.venv
+
+# Secrets & local config
+.env
+*.env
+.env.*
+Makefile.local
+
+# Lambda build artifacts
+lambda-package.zip
+*.zip
+
+# OS
+.DS_Store
+.vscode/
